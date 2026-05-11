@@ -4,24 +4,55 @@ declare(strict_types=1);
 
 namespace Phalanx\Hermes;
 
+use Phalanx\Boot\AppContext;
+use Phalanx\Boot\BootHarness;
+use Phalanx\Boot\Optional;
+use Phalanx\Hermes\Client\WsClient;
+use Phalanx\Hermes\Client\WsClientConfig;
 use Phalanx\Service\ServiceBundle;
 use Phalanx\Service\Services;
 
-final readonly class WsServiceBundle implements ServiceBundle
+final class WsServiceBundle extends ServiceBundle
 {
-    /** @param list<string> $subprotocols */
+    /**
+     * Hermes' WebSocket surface is feature-flagged; absence of host/port
+     * env keys must not block boot. Both entries warn on missing rather
+     * than failing.
+     */
+    #[\Override]
+    public static function harness(): BootHarness
+    {
+        return BootHarness::of(
+            Optional::env('PHALANX_WS_HOST', fallback: '0.0.0.0', description: 'Hermes WebSocket bind host'),
+            Optional::env('PHALANX_WS_PORT', fallback: '8081', description: 'Hermes WebSocket bind port'),
+        );
+    }
+
     public function __construct(
-        private array $subprotocols = [],
+        private ?WsClientConfig $clientConfig = null,
     ) {
     }
 
-    public function services(Services $services, array $context): void
+    public function services(Services $services, AppContext $context): void
     {
-        $services->singleton(WsGateway::class)
-            ->factory(static fn() => new WsGateway());
+        $clientConfig = $this->clientConfig;
 
-        $subprotocols = $this->subprotocols;
-        $services->singleton(WsHandshake::class)
-            ->factory(static fn() => new WsHandshake($subprotocols));
+        if (!$services->has(WsGateway::class)) {
+            $services->singleton(WsGateway::class)->factory(static fn() => new WsGateway());
+        }
+
+        if (!$services->has(WsClientConfig::class)) {
+            $services->config(
+                WsClientConfig::class,
+                static fn(): WsClientConfig => $clientConfig ?? WsClientConfig::default(),
+            );
+        }
+
+        if (!$services->has(WsClient::class)) {
+            $services
+                ->singleton(WsClient::class)
+                ->needs(WsClientConfig::class)
+                ->factory(static fn(WsClientConfig $config): WsClient => new WsClient($config));
+        }
     }
 }
